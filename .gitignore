@@ -1,0 +1,9 @@
+# FlashAvatar external repository
+FlashAvatar-code/
+
+# Python virtual environments
+flashavatar-env/
+venv/
+env/
+*.pyc
+__pycache__/
