@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A $0 graph traversal outperforms GPT-5.2 at finding bugs in PRs</title>
+    <meta name="description" content="We planted 141 bugs in 52 pull requests. A BFS on the call graph found 95%. GPT-5.2 found 56%.">
+    <meta property="og:title" content="A $0 graph traversal outperforms GPT-5.2 at finding bugs in PRs">
+    <meta property="og:description" content="We planted 141 bugs in 52 pull requests. A BFS on the call graph found 95%. GPT-5.2 found 56%.">
+    <meta property="og:type" content="article">
+    <style>
+        body {
+            font-family: serif;
+            max-width: 680px;
+            margin: 60px auto;
+            padding: 0 20px;
+            line-height: 1.7;
+            color: #1a1a1a;
+        }
+        h1 {
+            font-size: 1.6em;
+            margin-bottom: 8px;
+            line-height: 1.3;
+        }
+        h2 {
+            font-size: 1.2em;
+            margin-top: 40px;
+            margin-bottom: 12px;
+        }
+        .meta {
+            color: #888;
+            font-size: 0.9em;
+            margin-bottom: 36px;
+        }
+        .meta a {
+            color: #888;
+        }
+        p {
+            margin-bottom: 16px;
+        }
+        a {
+            color: inherit;
+        }
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+            font-size: 0.95em;
+        }
+        .results-table th {
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 2px solid #ddd;
+            font-weight: 600;
+        }
+        .results-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #eee;
+        }
+        .results-table tr:last-child td {
+            border-bottom: none;
+        }
+        .highlight {
+            font-weight: 600;
+        }
+        code {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.88em;
+            background: #f5f5f5;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .terminal {
+            background: #1a1a1a;
+            color: #ccc;
+            padding: 16px 20px;
+            border-radius: 6px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85em;
+            line-height: 1.6;
+            margin: 24px 0;
+            overflow-x: auto;
+        }
+        .terminal .g { color: #4ade80; }
+        .terminal .r { color: #f87171; }
+        .terminal .o { color: #fb923c; }
+        .terminal .d { color: #666; }
+        .terminal .w { color: #fff; font-weight: 600; }
+        .terminal .cmd { color: #fff; }
+        blockquote {
+            border-left: 3px solid #ddd;
+            margin: 24px 0;
+            padding: 0 0 0 16px;
+            color: #555;
+        }
+        .back {
+            display: inline-block;
+            margin-bottom: 24px;
+            font-size: 0.9em;
+            color: #888;
+            text-decoration: none;
+        }
+        .back:hover { color: #1a1a1a; }
+        .cta {
+            margin-top: 40px;
+            padding: 24px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+        .cta code {
+            background: #eee;
+        }
+    </style>
+</head>
+<body>
+    <a href="/" class="back">&larr; back</a>
+
+    <h1>A $0 graph traversal outperforms GPT-5.2 at finding bugs in PRs</h1>
+    <div class="meta">Rohan Sharma &middot; March 2026</div>
+
+    <p>We planted 141 bugs across 52 real pull requests in 5 open source repos. Then we ran three tools on them: our own, Greptile, and CodeRabbit.</p>
+
+    <p>The results surprised us.</p>
+
+    <table class="results-table">
+        <tr>
+            <th>Tool</th>
+            <th>Recall</th>
+            <th>How it works</th>
+        </tr>
+        <tr>
+            <td class="highlight">inspect + GPT-5.2</td>
+            <td class="highlight">95.0%</td>
+            <td>Graph triage, then LLM on top 10%</td>
+        </tr>
+        <tr>
+            <td>Greptile</td>
+            <td>91.5%</td>
+            <td>Full LLM review (API)</td>
+        </tr>
+        <tr>
+            <td>CodeRabbit</td>
+            <td>56.0%</td>
+            <td>Full LLM review (CLI)</td>
+        </tr>
+    </table>
+
+    <p>The first tool uses zero LLM calls for triage. It builds a dependency graph from tree-sitter, runs a BFS from each changed entity, counts how many things could break, and sorts by blast radius. The entire triage step takes 6ms per commit. No network. No tokens. No cost.</p>
+
+    <p>The LLM only sees the top entities. On a typical 8-file PR, that's 2 files instead of 8. On a 50-file PR, maybe 5 instead of 50. 92% fewer tokens, better recall.</p>
+
+    <h2>Why does this work?</h2>
+
+    <p>Most code review tools send the entire diff to an LLM. The LLM reads everything, tries to understand everything, and comments on everything. The problem is that context windows are finite and attention is not uniform. When you send 500 lines, the model spends the same attention on a renamed variable as on a broken public API.</p>
+
+    <p>A dependency graph knows which functions call which. It knows that <code>merge_entities()</code> has 12 callers and <code>update_readme()</code> has zero. This isn't a heuristic or a guess. It's a BFS on a directed graph. Deterministic, reproducible, instant.</p>
+
+    <p>When you combine the two, the graph handles triage (what to look at) and the LLM handles judgment (is this actually wrong). Each does what it's good at.</p>
+
+    <h2>The 100% number</h2>
+
+    <p>Of the 141 planted bugs, 29 were classified as high-criticality: broken APIs, security flaws, data loss risks. The graph caught all 29. 100% recall on the bugs that actually matter.</p>
+
+    <p>It missed some low-severity issues (wrong comments, minor style things). That's fine. Those aren't what breaks production.</p>
+
+    <h2>How the graph is built</h2>
+
+    <p>Tree-sitter parses every tracked file into an AST. We extract entities: functions, classes, methods, structs. Then we analyze references and calls between them to build a cross-file dependency graph.</p>
+
+    <p>When a commit changes an entity, we traverse the graph outward. Every entity reachable from the changed one gets counted. That count is the blast radius. High blast radius = high risk. Simple.</p>
+
+    <p>This works across 21 languages. Same graph, same traversal, same scoring. The only thing that changes per language is the tree-sitter grammar.</p>
+
+    <p style="margin-top: 40px;">
+        <a href="https://inspect.ataraxy-labs.com">inspect.ataraxy-labs.com</a>
+        &middot; <a href="https://huggingface.co/datasets/rs545837/inspect-greptile-bench">Benchmark dataset on HuggingFace</a>
+    </p>
+</body>
+</html>
