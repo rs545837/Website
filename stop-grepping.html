@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Stop Grepping, Ask the Compiler</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {
+    font-family: Georgia, 'Times New Roman', serif;
+    max-width: 620px;
+    margin: 40px auto;
+    padding: 0 20px;
+    line-height: 1.6;
+    color: #333;
+    font-size: 17px;
+}
+h1 {
+    font-size: 24px;
+    margin-bottom: 4px;
+}
+.date {
+    color: #999;
+    font-size: 14px;
+    margin-bottom: 40px;
+}
+p { margin-bottom: 18px; }
+code { font-size: 15px; background: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
+a { color: #333; }
+.footer { margin-top: 60px; color: #999; font-size: 14px; }
+
+/* dot grid */
+.grid-container {
+    margin: 36px 0;
+    user-select: none;
+}
+.grid-controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 14px;
+    font-family: -apple-system, system-ui, sans-serif;
+    font-size: 13px;
+}
+.grid-controls button {
+    padding: 6px 16px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: all 0.15s;
+}
+.grid-controls button:hover { border-color: #999; }
+.grid-controls button.active { background: #333; color: #fff; border-color: #333; }
+.grid-label {
+    font-family: -apple-system, system-ui, sans-serif;
+    font-size: 12px;
+    color: #999;
+    margin-top: 8px;
+    min-height: 18px;
+}
+.grid-stats {
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 12px;
+    color: #666;
+    margin-top: 6px;
+    min-height: 16px;
+}
+canvas {
+    display: block;
+    border-radius: 4px;
+}
+</style>
+</head>
+<body>
+
+<h1>Stop Grepping, Ask the Compiler</h1>
+<div class="date">April 2026</div>
+
+<p>
+When you change a function, the compiler already knows everything about it. Where it lives, what calls it, what types flow through it, what breaks if you touch its signature. It built this map the last time it ran. It's sitting right there.
+</p>
+
+<p>
+But agents don't use it. Instead they grep.
+</p>
+
+<p>
+They grep for the function name, read some files, grep again with a different pattern, read more files, and repeat. Each round costs tokens and latency. k rounds of search to answer a question the compiler could answer in one.
+</p>
+
+<!-- interactive dot grid -->
+<div class="grid-container">
+    <div class="grid-controls">
+        <button id="btn-grep" class="active" onclick="setMode('grep')">grep</button>
+        <button id="btn-graph" onclick="setMode('graph')">graph query</button>
+        <button id="btn-reset" onclick="resetGrid()" style="margin-left:auto; color:#999; border-color:#ddd;">reset</button>
+    </div>
+    <canvas id="dotgrid" width="580" height="320"></canvas>
+    <div class="grid-label" id="grid-label">Click any dot to search for it.</div>
+    <div class="grid-stats" id="grid-stats"></div>
+</div>
+
+<p>
+With n files in a codebase, grepping is O(n) per query. You scan everything for string matches when what you want is a graph traversal. Like reading every page in a library to find a phone number when there's a phone book on the front desk.
+</p>
+
+<p>
+Why do agents grep? Because that's the tool they were given. Most agent frameworks hand you a file system and a text search. That's it.
+</p>
+
+<p>
+What agents actually need is structural. Not which files contain the string <code>validateToken</code>, but what calls <code>validateToken</code> and what breaks if it changes. Graph questions, not text questions.
+</p>
+
+<p>
+Compilers know the answers. But compilers are hard to use for this. Full toolchain per language, internals aren't exposed in useful ways, and they choke on broken code. LSIF and SCIP tried to standardize this. Cross-language support never materialized.
+</p>
+
+<p>
+Tree-sitter turns out to be a surprisingly good middle path. It parses many languages with the same interface, works on broken code, and gives you the structural skeleton: functions, classes, imports, call relationships. Enough to build a dependency graph.
+</p>
+
+<p>
+A dependency graph can answer the questions agents actually ask. What depends on this function? What's the blast radius of this change? Which tests cover this code? All graph traversals. None require grepping.
+</p>
+
+<p>
+Grepping returns text matches. A dependency graph returns relationships. Grep for <code>validateToken</code> and you get every file that mentions it: tests, comments, string literals, unrelated functions with similar names. The graph gives you exactly the callers. No noise.
+</p>
+
+<p>
+Agents pay for noise with tokens. For a human, scanning grep results and skipping junk takes seconds. For an agent, every line of junk is real cost against a hard context limit.
+</p>
+
+<p>
+The natural unit here is the function. Not the file, that's too coarse. Not the line, that's too fine. Functions, classes, methods. That's how people think about code and how agents should too.
+</p>
+
+<p>
+If an agent has the dependency graph, it can answer what breaks if I change this in one call. Deterministic. No hallucination. Computed once, cached, free after that.
+</p>
+
+<!-- blast radius interactive -->
+<div class="grid-container">
+    <div style="font-family: -apple-system, system-ui, sans-serif; font-size: 13px; color: #999; margin-bottom: 10px;">
+        Click any function to see its blast radius.
+    </div>
+    <canvas id="blast" width="580" height="360"></canvas>
+    <div class="grid-label" id="blast-label"></div>
+    <div class="grid-stats" id="blast-stats"></div>
+</div>
+
+<p>
+The compiler already did the hard work. It parsed every file, resolved every symbol, traced every dependency. All that information exists. The question is why we make agents rediscover it from scratch, one grep at a time, burning through tokens to reconstruct a map that was already built.
+</p>
+
+<div class="footer">
+<a href="/">Rohan Sharma</a>
+</div>
+
+<script>
+const canvas = document.getElementById('dotgrid');
+const ctx = canvas.getContext('2d');
+const label = document.getElementById('grid-label');
+const stats = document.getElementById('grid-stats');
+
+const COLS = 29, ROWS = 16;
+const DOT_R = 5;
+const GAP_X = 20, GAP_Y = 20;
+const PAD_X = 10, PAD_Y = 10;
+
+let mode = 'grep';
+let dots = [];
+let edges = [];  // dependency edges [from, to]
+let animating = false;
+let animQueue = [];
+let highlighted = new Set();
+let selectedDot = -1;
+let scannedCount = 0;
+let matchCount = 0;
+
+function init() {
+    dots = [];
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            dots.push({
+                x: PAD_X + c * GAP_X,
+                y: PAD_Y + r * GAP_Y,
+                row: r, col: c,
+                state: 'idle' // idle, scanning, match, miss, dep
+            });
+        }
+    }
+    // build random dependency graph (each dot has 1-4 deps)
+    edges = [];
+    for (let i = 0; i < dots.length; i++) {
+        let numDeps = Math.floor(Math.random() * 4) + 1;
+        for (let d = 0; d < numDeps; d++) {
+            let target = Math.floor(Math.random() * dots.length);
+            if (target !== i) {
+                edges.push([i, target]);
+            }
+        }
+    }
+    resetGrid();
+}
+
+function resetGrid() {
+    animating = false;
+    animQueue = [];
+    highlighted.clear();
+    selectedDot = -1;
+    scannedCount = 0;
+    matchCount = 0;
+    dots.forEach(d => d.state = 'idle');
+    label.textContent = 'Click any dot to search for it.';
+    stats.textContent = '';
+    draw();
+}
+
+function setMode(m) {
+    mode = m;
+    document.getElementById('btn-grep').classList.toggle('active', m === 'grep');
+    document.getElementById('btn-graph').classList.toggle('active', m === 'graph');
+    resetGrid();
+}
+
+function getColor(state) {
+    switch(state) {
+        case 'idle': return '#ddd';
+        case 'scanning': return '#ffd166';
+        case 'match': return '#06d6a0';
+        case 'miss': return '#ef476f33';
+        case 'dep': return '#118ab2';
+        default: return '#ddd';
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // draw edges for graph mode matches
+    if (mode === 'graph' && selectedDot >= 0) {
+        ctx.strokeStyle = '#118ab222';
+        ctx.lineWidth = 1;
+        for (let [from, to] of edges) {
+            if (from === selectedDot || to === selectedDot) {
+                let a = dots[from], b = dots[to];
+                if (a.state === 'dep' || a.state === 'match' || b.state === 'dep' || b.state === 'match') {
+                    ctx.beginPath();
+                    ctx.moveTo(a.x, a.y);
+                    ctx.lineTo(b.x, b.y);
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+
+    // draw dots
+    for (let i = 0; i < dots.length; i++) {
+        let d = dots[i];
+        ctx.beginPath();
+        let r = (i === selectedDot) ? DOT_R + 2 : DOT_R;
+        ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = (i === selectedDot) ? '#333' : getColor(d.state);
+        ctx.fill();
+    }
+}
+
+function getDeps(dotIdx) {
+    let deps = new Set();
+    for (let [from, to] of edges) {
+        if (to === dotIdx) deps.add(from);
+        if (from === dotIdx) deps.add(to);
+    }
+    return deps;
+}
+
+function animateGrep(dotIdx) {
+    animating = true;
+    selectedDot = dotIdx;
+    dots[dotIdx].state = 'match';
+    scannedCount = 0;
+    matchCount = 0;
+
+    // grep scans ALL dots sequentially with some "matches" (noise)
+    let order = [];
+    for (let i = 0; i < dots.length; i++) {
+        if (i !== dotIdx) order.push(i);
+    }
+
+    // some random dots will be "matches" (string matches = noise)
+    let noiseMatches = new Set();
+    let deps = getDeps(dotIdx);
+    deps.forEach(d => noiseMatches.add(d));
+    // add some random noise
+    for (let i = 0; i < 8; i++) {
+        noiseMatches.add(order[Math.floor(Math.random() * order.length)]);
+    }
+
+    let step = 0;
+    function tick() {
+        if (!animating || step >= order.length) {
+            animating = false;
+            let actual = deps.size;
+            let noise = matchCount - actual;
+            label.textContent = `grep: scanned all ${dots.length} files, found ${matchCount} text matches (${actual} real + ${Math.max(0,noise)} noise)`;
+            stats.textContent = `tokens spent ≈ O(n)  ·  ${scannedCount} files read  ·  ${matchCount} results (noisy)`;
+            return;
+        }
+        let batchSize = 6;
+        for (let b = 0; b < batchSize && step < order.length; b++, step++) {
+            let idx = order[step];
+            scannedCount++;
+            if (noiseMatches.has(idx)) {
+                dots[idx].state = 'match';
+                matchCount++;
+            } else {
+                dots[idx].state = 'miss';
+            }
+        }
+        label.textContent = `grep: scanning... ${scannedCount}/${dots.length} files`;
+        stats.textContent = `tokens spent ≈ O(n)  ·  ${scannedCount} files read`;
+        draw();
+        requestAnimationFrame(tick);
+    }
+    tick();
+}
+
+function animateGraph(dotIdx) {
+    animating = true;
+    selectedDot = dotIdx;
+    dots[dotIdx].state = 'match';
+    let deps = getDeps(dotIdx);
+
+    // graph query: instantly light up only the dependencies
+    setTimeout(() => {
+        deps.forEach(d => {
+            dots[d].state = 'dep';
+        });
+        matchCount = deps.size;
+        label.textContent = `graph: found ${deps.size} direct dependencies. Done.`;
+        stats.textContent = `tokens spent ≈ O(d)  ·  ${deps.size} entities read  ·  ${deps.size} results (precise)`;
+        animating = false;
+        draw();
+    }, 150);
+
+    draw();
+}
+
+canvas.addEventListener('click', function(e) {
+    if (animating) return;
+    let rect = canvas.getBoundingClientRect();
+    let mx = e.clientX - rect.left;
+    let my = e.clientY - rect.top;
+
+    for (let i = 0; i < dots.length; i++) {
+        let d = dots[i];
+        let dx = mx - d.x, dy = my - d.y;
+        if (dx*dx + dy*dy < (DOT_R+4)*(DOT_R+4)) {
+            resetGrid();
+            if (mode === 'grep') {
+                animateGrep(i);
+            } else {
+                animateGraph(i);
+            }
+            return;
+        }
+    }
+});
+
+canvas.addEventListener('mousemove', function(e) {
+    let rect = canvas.getBoundingClientRect();
+    let mx = e.clientX - rect.left;
+    let my = e.clientY - rect.top;
+    let hovering = false;
+    for (let i = 0; i < dots.length; i++) {
+        let d = dots[i];
+        let dx = mx - d.x, dy = my - d.y;
+        if (dx*dx + dy*dy < (DOT_R+4)*(DOT_R+4)) {
+            hovering = true;
+            break;
+        }
+    }
+    canvas.style.cursor = hovering ? 'pointer' : 'default';
+});
+
+init();
+
+// === Blast radius visualization ===
+(function() {
+    const cv = document.getElementById('blast');
+    const bctx = cv.getContext('2d');
+    const blabel = document.getElementById('blast-label');
+    const bstats = document.getElementById('blast-stats');
+
+    const names = [
+        'authenticate', 'validateToken', 'getUser', 'fetchProfile',
+        'renderDashboard', 'checkPermissions', 'logAction', 'sendEmail',
+        'parseConfig', 'connectDB', 'runQuery', 'cacheResult',
+        'handleRequest', 'formatResponse', 'writeLog', 'hashPassword',
+        'createSession', 'rateLimit', 'validateInput', 'serializeData'
+    ];
+
+    let nodes = [];
+    let nedges = [];
+    let blastAnim = false;
+    let hoveredNode = -1;
+
+    function initBlast() {
+        nodes = [];
+        // place nodes using a seeded-ish layout
+        const cx = 290, cy = 180;
+        for (let i = 0; i < names.length; i++) {
+            const angle = (i / names.length) * Math.PI * 2 + 0.3;
+            const ring = (i % 3 === 0) ? 0.35 : (i % 3 === 1) ? 0.7 : 1.0;
+            const jx = (Math.sin(i * 7.3) * 30);
+            const jy = (Math.cos(i * 5.1) * 25);
+            nodes.push({
+                x: cx + Math.cos(angle) * (ring * 140) + jx,
+                y: cy + Math.sin(angle) * (ring * 110) + jy,
+                name: names[i],
+                state: 'idle', // idle, source, wave1, wave2, wave3
+                wave: -1
+            });
+        }
+        // clamp to canvas
+        nodes.forEach(n => {
+            n.x = Math.max(60, Math.min(520, n.x));
+            n.y = Math.max(25, Math.min(340, n.y));
+        });
+
+        // build directed dependency edges (somewhat realistic)
+        nedges = [
+            [12, 0], [12, 5], [12, 18],  // handleRequest -> authenticate, checkPermissions, validateInput
+            [0, 1], [0, 16],              // authenticate -> validateToken, createSession
+            [1, 15], [1, 9],              // validateToken -> hashPassword, connectDB
+            [12, 2], [2, 10], [2, 11],    // handleRequest -> getUser -> runQuery, cacheResult
+            [10, 9],                       // runQuery -> connectDB
+            [3, 2], [3, 11],              // fetchProfile -> getUser, cacheResult
+            [4, 3], [4, 13],              // renderDashboard -> fetchProfile, formatResponse
+            [5, 1], [5, 6],               // checkPermissions -> validateToken, logAction
+            [6, 14],                       // logAction -> writeLog
+            [7, 2], [7, 8],               // sendEmail -> getUser, parseConfig
+            [13, 19],                      // formatResponse -> serializeData
+            [17, 6],                       // rateLimit -> logAction
+            [12, 17],                      // handleRequest -> rateLimit
+        ];
+
+        resetBlast();
+    }
+
+    function resetBlast() {
+        blastAnim = false;
+        nodes.forEach(n => { n.state = 'idle'; n.wave = -1; });
+        blabel.textContent = '';
+        bstats.textContent = '';
+        drawBlast();
+    }
+
+    function getNodeColor(state) {
+        switch(state) {
+            case 'idle': return '#ddd';
+            case 'source': return '#ef476f';
+            case 'wave1': return '#ffd166';
+            case 'wave2': return '#06d6a0';
+            case 'wave3': return '#118ab2';
+            default: return '#ddd';
+        }
+    }
+
+    function getWaveLabel(w) {
+        return ['source', 'direct dep', '2nd degree', '3rd degree'][w] || '';
+    }
+
+    function drawBlast() {
+        bctx.clearRect(0, 0, cv.width, cv.height);
+
+        // draw edges
+        for (let [from, to] of nedges) {
+            let a = nodes[from], b = nodes[to];
+            let active = a.state !== 'idle' && b.state !== 'idle';
+            bctx.strokeStyle = active ? '#33333344' : '#eee';
+            bctx.lineWidth = active ? 1.5 : 0.5;
+            bctx.beginPath();
+            bctx.moveTo(a.x, a.y);
+            bctx.lineTo(b.x, b.y);
+            bctx.stroke();
+
+            // arrowhead for active edges
+            if (active) {
+                let dx = b.x - a.x, dy = b.y - a.y;
+                let len = Math.sqrt(dx*dx + dy*dy);
+                if (len > 0) {
+                    let ux = dx/len, uy = dy/len;
+                    let ax = b.x - ux*12, ay = b.y - uy*12;
+                    bctx.beginPath();
+                    bctx.moveTo(b.x - ux*6, b.y - uy*6);
+                    bctx.lineTo(ax - uy*4, ay + ux*4);
+                    bctx.lineTo(ax + uy*4, ay - ux*4);
+                    bctx.fillStyle = '#33333344';
+                    bctx.fill();
+                }
+            }
+        }
+
+        // draw nodes
+        for (let i = 0; i < nodes.length; i++) {
+            let n = nodes[i];
+            let r = (n.state === 'source') ? 8 : (n.state !== 'idle' ? 7 : 5);
+
+            // glow for active nodes
+            if (n.state !== 'idle') {
+                bctx.beginPath();
+                bctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2);
+                bctx.fillStyle = getNodeColor(n.state) + '33';
+                bctx.fill();
+            }
+
+            bctx.beginPath();
+            bctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+            bctx.fillStyle = getNodeColor(n.state);
+            bctx.fill();
+
+            // label
+            bctx.font = (n.state !== 'idle' || i === hoveredNode) ? 'bold 10px -apple-system, system-ui, sans-serif' : '9px -apple-system, system-ui, sans-serif';
+            bctx.fillStyle = n.state !== 'idle' ? '#333' : '#aaa';
+            bctx.textAlign = 'center';
+            bctx.fillText(n.name, n.x, n.y + r + 13);
+        }
+    }
+
+    function getDownstream(nodeIdx) {
+        // BFS from nodeIdx following edges forward
+        let visited = new Map(); // nodeIdx -> wave number
+        visited.set(nodeIdx, 0);
+        let queue = [nodeIdx];
+        let wave = 0;
+        while (queue.length > 0 && wave < 3) {
+            let nextQueue = [];
+            for (let current of queue) {
+                for (let [from, to] of nedges) {
+                    if (to === current && !visited.has(from)) {
+                        visited.set(from, wave + 1);
+                        nextQueue.push(from);
+                    }
+                }
+            }
+            queue = nextQueue;
+            wave++;
+        }
+        return visited;
+    }
+
+    function animateBlast(nodeIdx) {
+        blastAnim = true;
+        resetBlast();
+        nodes[nodeIdx].state = 'source';
+        nodes[nodeIdx].wave = 0;
+
+        let downstream = getDownstream(nodeIdx);
+        let maxWave = 0;
+        downstream.forEach(w => { if (w > maxWave) maxWave = w; });
+
+        let currentWave = 1;
+        let totalImpacted = 0;
+
+        blabel.textContent = `Changed: ${nodes[nodeIdx].name}()`;
+        drawBlast();
+
+        function nextWave() {
+            if (currentWave > maxWave || !blastAnim) {
+                blastAnim = false;
+                let total = downstream.size - 1; // exclude source
+                bstats.textContent = `${total} entities impacted across ${maxWave} degree${maxWave !== 1 ? 's' : ''} of separation  ·  O(d) cost`;
+                return;
+            }
+
+            let waveStates = ['source', 'wave1', 'wave2', 'wave3'];
+            downstream.forEach((w, idx) => {
+                if (w === currentWave) {
+                    nodes[idx].state = waveStates[Math.min(w, 3)];
+                    nodes[idx].wave = w;
+                    totalImpacted++;
+                }
+            });
+
+            let waveCount = 0;
+            downstream.forEach((w) => { if (w === currentWave) waveCount++; });
+            blabel.textContent = `Wave ${currentWave}: ${waveCount} entit${waveCount !== 1 ? 'ies' : 'y'} affected (${totalImpacted} total)`;
+            drawBlast();
+            currentWave++;
+            setTimeout(nextWave, 600);
+        }
+
+        setTimeout(nextWave, 400);
+    }
+
+    cv.addEventListener('click', function(e) {
+        if (blastAnim) return;
+        let rect = cv.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+        for (let i = 0; i < nodes.length; i++) {
+            let dx = mx - nodes[i].x, dy = my - nodes[i].y;
+            if (dx*dx + dy*dy < 144) {
+                animateBlast(i);
+                return;
+            }
+        }
+    });
+
+    cv.addEventListener('mousemove', function(e) {
+        let rect = cv.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+        let prev = hoveredNode;
+        hoveredNode = -1;
+        for (let i = 0; i < nodes.length; i++) {
+            let dx = mx - nodes[i].x, dy = my - nodes[i].y;
+            if (dx*dx + dy*dy < 144) {
+                hoveredNode = i;
+                break;
+            }
+        }
+        cv.style.cursor = hoveredNode >= 0 ? 'pointer' : 'default';
+        if (prev !== hoveredNode && !blastAnim) drawBlast();
+    });
+
+    initBlast();
+})();
+</script>
+
+</body>
+</html>
