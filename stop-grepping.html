@@ -122,11 +122,11 @@ Tree-sitter turns out to be a surprisingly good middle path. It parses many lang
 </p>
 
 <p>
-A dependency graph can answer the questions agents actually ask. What depends on this function? What's the blast radius of this change? Which tests cover this code? All graph traversals. None require grepping.
+A dependency graph can answer the questions agents actually ask. What depends on this function? What's the blast radius of this change? Which tests cover this code? All graph traversals, none require grepping.
 </p>
 
 <p>
-Grepping returns text matches. A dependency graph returns relationships. Grep for <code>validateToken</code> and you get every file that mentions it: tests, comments, string literals, unrelated functions with similar names. The graph gives you exactly the callers. No noise.
+Grepping returns text matches. A dependency graph returns relationships. Grep for <code>validateToken</code> and you get every file that mentions it: tests, comments, string literals, unrelated functions with similar names. The graph gives you exactly the callers, no noise.
 </p>
 
 <p>
@@ -138,7 +138,7 @@ The natural unit here is the function. Not the file, that's too coarse. Not the 
 </p>
 
 <p>
-If an agent has the dependency graph, it can answer what breaks if I change this in one call. Deterministic. No hallucination. Computed once, cached, free after that.
+If an agent has the dependency graph, it can answer what breaks if I change this in one call. Deterministic, no hallucination. Computed once, cached, free after that.
 </p>
 
 <!-- blast radius interactive -->
