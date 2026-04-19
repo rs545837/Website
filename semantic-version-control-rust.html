@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Building Semantic Version Control in Rust</title>
+    <meta name="description" content="Entity-level version control in Rust with tree-sitter, petgraph, and Rayon. How I built sem and weave, and the algorithmic decisions behind them.">
+    <meta property="og:title" content="Building Semantic Version Control in Rust">
+    <meta property="og:description" content="Entity-level version control in Rust with tree-sitter, petgraph, and Rayon. How I built sem and weave, and the algorithmic decisions behind them.">
+    <meta property="og:type" content="article">
+    <style>
+        body {
+            font-family: serif;
+            max-width: 680px;
+            margin: 60px auto;
+            padding: 0 20px;
+            line-height: 1.7;
+            color: #1a1a1a;
+        }
+        h1 {
+            font-size: 1.6em;
+            margin-bottom: 8px;
+            line-height: 1.3;
+        }
+        h2 {
+            font-size: 1.2em;
+            margin-top: 40px;
+            margin-bottom: 12px;
+        }
+        .meta {
+            color: #888;
+            font-size: 0.9em;
+            margin-bottom: 36px;
+        }
+        .meta a {
+            color: #888;
+        }
+        p {
+            margin-bottom: 16px;
+        }
+        a {
+            color: inherit;
+        }
+        code {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.88em;
+            background: #f5f5f5;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .terminal {
+            background: #1a1a1a;
+            color: #ccc;
+            padding: 16px 20px;
+            border-radius: 6px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85em;
+            line-height: 1.6;
+            margin: 24px 0;
+            overflow-x: auto;
+        }
+        .terminal code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+        .kw { color: #569cd6; }
+        .ty { color: #4ec9b0; }
+        .st { color: #ce9178; }
+        .cm { color: #6a9955; }
+        .fn { color: #dcdcaa; }
+        .nu { color: #b5cea8; }
+        blockquote {
+            border-left: 3px solid #ddd;
+            margin: 24px 0;
+            padding: 0 0 0 16px;
+            color: #555;
+        }
+        .back {
+            display: inline-block;
+            margin-bottom: 24px;
+            font-size: 0.9em;
+            color: #888;
+            text-decoration: none;
+        }
+        .back:hover { color: #1a1a1a; }
+        .cta {
+            margin-top: 40px;
+            padding: 24px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+        .cta code {
+            background: #eee;
+        }
+    </style>
+</head>
+<body>
+    <a href="/" class="back">&larr; back</a>
+
+    <h1>Building Semantic Version Control in Rust</h1>
+    <div class="meta">Rohan Sharma &middot; April 2026</div>
+
+    <p>If you ask a developer what they changed in a commit, they'll say something like "I refactored the authentication handler" or "I added a retry to the upload function," and they never say "I changed lines 47 through 52," because nobody thinks about code that way, but git does, and git has no idea what a function is, or a class, or a method, it just sees lines of text and diffs them the same way it would diff a grocery list.</p>
+
+    <p>This is fine most of the time, git is a brilliant piece of engineering and the line abstraction has carried us remarkably far, but there's a ceiling to what you can build on top of it and I keep hitting that ceiling in increasingly painful ways: merge conflicts that aren't real conflicts, diffs full of noise from reformatting, code review tools that dump the entire changeset into an LLM and hope for the best. These aren't bugs in git, they're consequences of the abstraction it chose.</p>
+
+    <p>I've been developing and researching <a href="https://github.com/ataraxy-labs/sem">sem</a> to try a different abstraction. It's a version control CLI in Rust that operates on entities: functions, classes, methods, interfaces. Its companion, <a href="https://github.com/ataraxy-labs/weave">weave</a>, is a merge driver that uses the same entity model to resolve conflicts git can't, and this post is about the algorithmic decisions I made along the way, and why I made them in Rust.</p>
+
+    <h2>Choosing the right atom</h2>
+
+    <p>The first question you have to answer when building something like this is: what's the unit of work? You could operate on tokens, or AST nodes, or lines, or files. Each choice implies a different set of tradeoffs, and it's worth thinking carefully about which ones you want.</p>
+
+    <p>Files are too coarse, because when you say "this file changed" you've thrown away most of the interesting information, and a thousand-line file where someone fixed a typo in one function looks the same as a thousand-line file where someone rewrote the core algorithm. Lines are too fine, because a single logical change like adding a parameter to a function signature and updating the body to use it spans multiple lines but is semantically one thing. And individual AST nodes are too numerous and too low-level to be useful for anything except compiler internals.</p>
+
+    <p>The entity sits in a sweet spot: a function, a class, a method, a type definition. It's the unit that humans naturally think in when they talk about code, and it's also the unit that captures meaningful structure because an entity has a name, a type, dependencies on other entities, and a body that can be hashed and compared. My core data model reflects this directly:</p>
+
+    <div class="terminal"><code><span class="kw">pub struct</span> <span class="ty">SemanticEntity</span> {
+    <span class="kw">pub</span> id: <span class="ty">String</span>,
+    <span class="kw">pub</span> name: <span class="ty">String</span>,
+    <span class="kw">pub</span> entity_type: <span class="ty">String</span>,
+    <span class="kw">pub</span> content: <span class="ty">String</span>,
+    <span class="kw">pub</span> start_line: <span class="ty">usize</span>,
+    <span class="kw">pub</span> end_line: <span class="ty">usize</span>,
+    <span class="kw">pub</span> structural_hash: <span class="ty">u64</span>,
+    <span class="kw">pub</span> parent_id: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+    <span class="kw">pub</span> dependencies: <span class="ty">Vec</span>&lt;<span class="ty">String</span>&gt;,
+}</code></div>
+
+    <p>One field here deserves special attention: the <code>parent_id</code> creates a hierarchy, so when I parse a class, I also extract each of its methods as separate entities whose <code>parent_id</code> points back to the class, and this turns out to be crucial for merging because it means two developers editing different methods in the same class produce two independent changes rather than one monolithic conflict, which is something git can't see because it just sees one contiguous block of text that both sides touched.</p>
+
+    <h2>Why tree-sitter, and why one trait per language</h2>
+
+    <p>To parse code into entities you need a parser, and I considered three approaches: regular expressions, which are fast but fragile and break on edge cases constantly, language-specific compilers, which are accurate but would require embedding rustc and the Go compiler and javac and so on, and tree-sitter, which turned out to be the right choice because it gives you concrete syntax trees that are good enough for structural analysis, it works on partial and broken code, and it has grammars for essentially every language you'd encounter in a real codebase.</p>
+
+    <p>Each grammar is a separate Rust crate, and I currently pull in grammars for Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, Ruby, Swift, Kotlin, and C# among others. Every grammar produces a tree with language-specific node kinds, so the Rust grammar gives you <code>function_item</code> where Python gives you <code>function_definition</code> and Go gives you <code>function_declaration</code>, and I handle this with a simple trait where each language plugin maps its grammar's node kinds to the entity types while the rest of the pipeline remains entirely language-agnostic.</p>
+
+    <div class="terminal"><code><span class="kw">fn</span> <span class="fn">extract_entities</span>(tree: &<span class="ty">Tree</span>, source: &<span class="ty">str</span>) -> <span class="ty">Vec</span>&lt;<span class="ty">SemanticEntity</span>&gt; {
+    <span class="kw">let mut</span> cursor = tree.root_node().walk();
+    <span class="kw">let mut</span> entities = <span class="ty">Vec</span>::new();
+
+    <span class="kw">for</span> node <span class="kw">in</span> tree.root_node().children(&<span class="kw">mut</span> cursor) {
+        <span class="kw">match</span> node.kind() {
+            <span class="st">"function_item"</span> | <span class="st">"function_definition"</span> => {
+                entities.push(<span class="fn">build_entity</span>(node, source, <span class="st">"function"</span>));
+            }
+            <span class="st">"class_definition"</span> | <span class="st">"impl_item"</span> => {
+                <span class="kw">let</span> class_entity = <span class="fn">build_entity</span>(node, source, <span class="st">"class"</span>);
+                <span class="kw">let</span> class_id = class_entity.id.clone();
+                entities.push(class_entity);
+                <span class="fn">extract_children</span>(node, source, &class_id, &<span class="kw">mut</span> entities);
+            }
+            _ => {}
+        }
+    }
+    entities
+}</code></div>
+
+    <p>The design choice to keep parser plugins as thin wrappers around tree-sitter node matching paid off quickly, because adding a new language is just a matter of writing one function that says "this node kind is a function, this one is a class, these are its children," and everything downstream, the hashing, the diffing, the graph building, the merging, doesn't need to know or care what language it's looking at, which is how I went from supporting 4 languages to 26 in about two weeks.</p>
+
+    <h2>Deciding when code actually changed</h2>
+
+    <p>Here's a problem that seems simple until you think about it carefully: someone reformats a file, adds a few comments, and renames a local variable, and git shows a diff with dozens of changed lines, but did the code actually change? In any meaningful sense, no, the program does exactly what it did before.</p>
+
+    <p>I wanted a way to tell the difference between cosmetic changes and functional ones, and the answer turned out to be a structural hash, where the idea is to normalize the code before hashing it by stripping all comments, collapsing whitespace, and then computing a hash over what remains, so that if two versions of an entity produce the same structural hash they're functionally identical regardless of how different the raw text looks.</p>
+
+    <div class="terminal"><code><span class="kw">use</span> xxhash_rust::xxh64;
+
+<span class="kw">fn</span> <span class="fn">structural_hash</span>(content: &<span class="ty">str</span>) -> <span class="ty">u64</span> {
+    <span class="kw">let</span> normalized = content
+        .lines()
+        .filter(|line| !<span class="fn">is_comment_line</span>(line))
+        .map(|line| line.trim())
+        .collect::&lt;<span class="ty">Vec</span>&lt;_&gt;&gt;()
+        .join(<span class="st">"\n"</span>);
+    xxh64::<span class="fn">xxh64</span>(normalized.as_bytes(), <span class="nu">0</span>)
+}</code></div>
+
+    <p>I chose xxHash64 over SHA-256 or BLAKE3 because I don't need cryptographic properties here, I'm not building a content-addressable store, I just need fast, low-collision hashing of code-sized inputs, typically a few hundred bytes to a few kilobytes, and xxHash64 runs at memory bandwidth speeds which means hashing is never the bottleneck in the pipeline. The more interesting decision was what to normalize: I strip comments and whitespace, but I don't normalize identifier names, because renaming a public function <em>is</em> a meaningful change even if the body stays the same, and where you draw that line determines what your tool considers "noise" versus "signal," and getting it wrong in either direction makes the tool useless.</p>
+
+    <h2>The matching problem</h2>
+
+    <p>When you diff two versions of a file you need to figure out which entity in the old version corresponds to which entity in the new version, and this is harder than it sounds because entities can be renamed, moved within the file, or modified so heavily that they barely resemble their former selves, and you can't just match by line number because everything shifts when someone adds a function at the top of the file, and you can't just match by name because people rename things.</p>
+
+    <p>I settled on a three-phase approach that gets progressively more expensive but also progressively more tolerant of changes: phase one matches by entity ID, which is a combination of file path, entity type, and name, and this is O(n) with a hash map and catches every entity that wasn't renamed or moved. Phase two takes the remaining unmatched entities and looks for pairs with identical structural hashes, same code but different name or location, which catches renames and moves and is also O(n). Phase three is the expensive one, where for whatever is still unmatched I compute a Jaccard similarity coefficient over the token sets of each pair.</p>
+
+    <blockquote>
+        The Jaccard coefficient measures overlap between two sets: for entities <em>a</em> and <em>b</em>, you tokenize their content by whitespace and compute J(a, b) = |tokens(a) &cap; tokens(b)| / |tokens(a) &cup; tokens(b)|. A score of 1.0 means identical token sets, a score above 0.6 means the entities share enough structure to be considered the same entity after refactoring, and below that I treat them as unrelated.
+    </blockquote>
+
+    <p>The reason for the phased approach is computational: Jaccard comparison is O(n&sup2;) in the number of unmatched entities, which would be expensive if you ran it on everything, but phases one and two are cheap and typically resolve the vast majority of matches, so by the time you get to phase three n is small, and in practice I almost never run Jaccard on more than a handful of entities per file, which means the whole pipeline feels instant even on large diffs.</p>
+
+    <div class="terminal"><code><span class="kw">fn</span> <span class="fn">jaccard_similarity</span>(a: &<span class="ty">str</span>, b: &<span class="ty">str</span>) -> <span class="ty">f64</span> {
+    <span class="kw">let</span> tokens_a: <span class="ty">HashSet</span>&lt;&<span class="ty">str</span>&gt; = a.split_whitespace().collect();
+    <span class="kw">let</span> tokens_b: <span class="ty">HashSet</span>&lt;&<span class="ty">str</span>&gt; = b.split_whitespace().collect();
+    <span class="kw">let</span> intersection = tokens_a.<span class="fn">intersection</span>(&tokens_b).count();
+    <span class="kw">let</span> union = tokens_a.<span class="fn">union</span>(&tokens_b).count();
+    <span class="kw">if</span> union == <span class="nu">0</span> { <span class="nu">0.0</span> } <span class="kw">else</span> { intersection <span class="kw">as</span> <span class="ty">f64</span> / union <span class="kw">as</span> <span class="ty">f64</span> }
+}</code></div>
+
+    <h2>The dependency graph</h2>
+
+    <p>If you had to pick one thing that makes entity-level version control genuinely different from line-level diffing, it would be the dependency graph. After parsing all the entities in a repository I build a directed graph where each node is an entity and each edge means "this entity depends on that one," so function A calls function B, class C inherits from class D, module E imports from module F, and I use <a href="https://docs.rs/petgraph">petgraph</a>'s <code>DiGraph</code> for this, mostly because it gives me clean APIs for graph reversal and traversal without having to think about the underlying adjacency list representation.</p>
+
+    <div class="terminal"><code><span class="kw">use</span> petgraph::graph::<span class="ty">DiGraph</span>;
+<span class="kw">use</span> petgraph::visit::<span class="ty">Bfs</span>;
+
+<span class="kw">pub struct</span> <span class="ty">EntityGraph</span> {
+    graph: <span class="ty">DiGraph</span>&lt;<span class="ty">String</span>, ()&gt;,
+    node_map: <span class="ty">HashMap</span>&lt;<span class="ty">String</span>, <span class="ty">NodeIndex</span>&gt;,
+}
+
+<span class="kw">impl</span> <span class="ty">EntityGraph</span> {
+    <span class="kw">pub fn</span> <span class="fn">dependents</span>(&<span class="kw">self</span>, entity_id: &<span class="ty">str</span>) -> <span class="ty">Vec</span>&lt;<span class="ty">String</span>&gt; {
+        <span class="kw">let</span> start = <span class="kw">self</span>.node_map[entity_id];
+        <span class="kw">let</span> reversed = <span class="ty">Reversed</span>(&<span class="kw">self</span>.graph);
+        <span class="kw">let mut</span> bfs = <span class="ty">Bfs</span>::new(&reversed, start);
+        <span class="kw">let mut</span> result = <span class="ty">Vec</span>::new();
+        <span class="kw">while let</span> <span class="ty">Some</span>(node) = bfs.<span class="fn">next</span>(&reversed) {
+            <span class="kw">if</span> node != start {
+                result.push(<span class="kw">self</span>.graph[node].clone());
+            }
+        }
+        result
+    }
+}</code></div>
+
+    <p>The graph answers a question that no amount of text diffing can answer: if you change this function, what else might break? I call the answer "blast radius," and it's computed by running BFS on the reversed graph starting from the changed entity, where every node you reach is something that transitively depends on the thing you changed, so an entity with a blast radius of zero can be modified freely while an entity that half the codebase depends on needs to be touched with great care. This is the kind of information that's obvious to a senior developer who knows the codebase by heart, but invisible to a line-level diff, and prohibitively expensive for an LLM to figure out by reading source code.</p>
+
+    <p>The reason I use BFS rather than DFS is subtle but matters: BFS gives you results ordered by distance from the changed entity, direct callers first, then their callers, and so on outward, and this ordering is useful for prioritizing review because a direct dependent is more likely to be affected by a change than something five hops away, whereas DFS would give you an arbitrary ordering that's harder to reason about.</p>
+
+    <h2>Parallelism as a natural consequence</h2>
+
+    <p>One of the things that made Rust the right choice for this project is that the parsing problem is embarrassingly parallel in a way that Rust makes trivially safe to exploit, because each file is independent and there's no shared mutable state during parsing, you just read the file, build a tree, extract entities, and return them, and with Rayon the whole thing is a one-line change from sequential to parallel:</p>
+
+    <div class="terminal"><code><span class="kw">use</span> rayon::prelude::*;
+
+<span class="kw">fn</span> <span class="fn">parse_repository</span>(files: <span class="ty">Vec</span>&lt;<span class="ty">PathBuf</span>&gt;) -> <span class="ty">Vec</span>&lt;<span class="ty">SemanticEntity</span>&gt; {
+    files
+        .par_iter()
+        .<span class="fn">flat_map</span>(|path| {
+            <span class="kw">let</span> source = std::fs::<span class="fn">read_to_string</span>(path).ok()?;
+            <span class="kw">let</span> lang = <span class="fn">detect_language</span>(path)?;
+            <span class="kw">let</span> parser = <span class="fn">get_parser</span>(lang);
+            <span class="ty">Some</span>(<span class="fn">extract_entities</span>(&parser, &source))
+        })
+        .flatten()
+        .collect()
+}</code></div>
+
+    <p>What's nice about this is that I didn't have to think about thread safety at all, because the borrow checker guarantees that nothing in the parsing pipeline can cause a data race since none of the closures capture mutable references to shared state, and Rayon's work-stealing scheduler handles load balancing automatically so files that are large and take longer to parse don't create stragglers, and the only synchronization point is the final <code>.collect()</code> which assembles all the per-file entity lists into one big vector. In practice this means a large repository with thousands of files parses in seconds, and I get that performance for free, without a single mutex or atomic.</p>
+
+    <h2>Merging at the right level</h2>
+
+    <p>The companion tool, <a href="https://github.com/ataraxy-labs/weave">weave</a>, takes the same entity model and uses it to merge, and it registers as a custom merge driver in <code>.gitattributes</code> so git calls it automatically during merges, rebases, and cherry-picks. The algorithm takes the three versions of a file that git provides (base, ours, theirs), parses each into entities, matches them across versions using the same three-phase algorithm, and then makes a decision for each entity: if only one side changed it, take that side's version, if neither side changed it, keep the base, and if both sides changed it, you have a real conflict, which is where the interesting algorithmic decision lives.</p>
+
+    <p>Rather than giving up and dumping conflict markers like git does, weave tries one more level of decomposition, where if the conflicting entity is a container like a class with methods it decomposes it into its children using the <code>parent_id</code> hierarchy and attempts to merge at that level instead. I call this "inner merge," and it means two developers who edited different methods in the same class get a clean merge because at the method level there's no conflict at all, something git can't do because it doesn't know where one method ends and the next begins, it just sees a block of text that both sides touched.</p>
+
+    <blockquote>
+        The inner merge decision is conservative by design: if decomposing a container into sub-entities doesn't resolve the conflict cleanly, I fall back to git's line-level merge for that entity, because the cardinal rule is that weave must never produce a worse result than git. Either it resolves something git couldn't, or it gets out of the way and lets git handle it, which means the tool is safe to enable globally since the worst case is identical to not using it at all.
+    </blockquote>
+
+    <h2>Why Rust</h2>
+
+    <p>I could have built this in Python or TypeScript, tree-sitter has bindings for both, but three things pushed me toward Rust and in retrospect all three turned out to matter more than I expected.</p>
+
+    <p>First, the type system. The entity model has a lot of invariants, parent IDs must reference real entities, dependency edges must point to existing nodes, structural hashes must be computed before matching, and in Python these invariants would be enforced by convention and broken by accident, but in Rust they're enforced by the compiler, and I've never had a bug where a parent ID pointed to nothing because the type system won't let you construct that state.</p>
+
+    <p>Second, performance is table stakes for developer tools, and if <code>sem diff</code> took two seconds instead of being instant nobody would use it. Rust gives me the performance of C without the memory safety footguns, and Rayon gives me parallelism without the concurrency bugs, and the whole tool feels snappy in a way that matters for adoption.</p>
+
+    <p>Third, Cargo workspaces. I have three tools (sem, weave, inspect) that share a core library, and Cargo workspaces let me keep them in one repository with shared compilation, independent versioning, and one <code>cargo test</code> that runs everything, and the dependency graph between my own crates mirrors the dependency graph I build for user code, which is a satisfying kind of dogfooding.</p>
+
+    <div class="terminal"><code>sem/
+  crates/
+    sem-core/      <span class="cm"># Entity model, parsers, graph, diffing</span>
+    sem-cli/       <span class="cm"># CLI: sem diff, sem blame, sem graph, sem impact</span>
+    sem-mcp/       <span class="cm"># MCP server for AI agent integration</span></code></div>
+
+    <h2>Try it</h2>
+
+    <div class="terminal"><code><span class="cm"># Install</span>
+brew install sem-cli
+brew install weave
+
+<span class="cm"># Entity-level diff</span>
+sem diff HEAD~1
+
+<span class="cm"># What depends on this function?</span>
+sem graph src/main.rs
+
+<span class="cm"># What breaks if this function changes?</span>
+sem impact src/parser.rs::parse_file
+
+<span class="cm"># Enable semantic merging for your repo</span>
+weave install</code></div>
+
+    <p>Both are open source and available on Homebrew: <a href="https://github.com/ataraxy-labs/sem">sem</a> for entity-level diffing, blame, and impact analysis, and <a href="https://github.com/ataraxy-labs/weave">weave</a> for entity-level merging.</p>
+
+</body>
+</html>
