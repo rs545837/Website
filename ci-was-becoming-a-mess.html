@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CI Was Becoming a Mess</title>
+<meta name="description" content="What I changed when agents started writing code faster than CI could check it, and what the measurements taught me.">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0a0a0a; --fg: #e0e0e0; --dim: #777; --dim2: #444; --border: #222;
+    --accent: #fff; --green: #4ade80; --yellow: #facc15; --red: #f87171; --blue: #60a5fa;
+    --surface: #111; --surface2: #141414;
+    --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Menlo, monospace;
+  }
+  body { font-family: var(--mono); background: var(--bg); color: var(--fg); line-height: 1.75; -webkit-font-smoothing: antialiased; font-size: 15px; }
+  a { color: var(--fg); text-decoration-color: var(--dim); text-underline-offset: 3px; }
+  a:hover { color: var(--accent); text-decoration-color: var(--accent); }
+  nav { border-bottom: 1px solid var(--border); }
+  nav .inner { max-width: 720px; margin: 0 auto; padding: 18px 24px; display: flex; justify-content: space-between; font-size: 13px; color: var(--dim); }
+  nav .inner a { color: var(--dim); text-decoration: none; }
+  nav .inner a:hover { color: var(--accent); }
+  main { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+  h1 { font-size: 30px; line-height: 1.25; color: var(--accent); letter-spacing: -1px; margin-bottom: 10px; }
+  .date { color: var(--dim); font-size: 13px; margin-bottom: 44px; }
+  h2 { font-size: 18px; color: var(--accent); letter-spacing: -0.3px; margin: 48px 0 14px; }
+  p { margin-bottom: 18px; }
+  code { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 13px; }
+  .terminal { background: #0d0d0d; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 26px 0 30px; }
+  .terminal-bar { background: var(--surface2); padding: 10px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #333; }
+  .terminal-title { font-size: 12px; color: var(--dim); margin-left: 8px; }
+  .terminal-body { padding: 18px 22px; font-size: 13px; line-height: 1.8; overflow-x: auto; white-space: pre; }
+  .g { color: var(--green); } .y { color: var(--yellow); } .r { color: var(--red); } .d { color: var(--dim2); } .w { color: var(--accent); font-weight: 600; } .m { color: var(--dim); }
+  .cyan { color: #22d3ee; } .b { color: var(--blue); }
+  h2::before { content: "## "; color: var(--green); }
+  .speed-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 44px; }
+  .speed-pill { display: flex; align-items: baseline; gap: 8px; padding: 12px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+  .speed-pill .number { font-size: 22px; font-weight: 700; color: var(--green); letter-spacing: -1px; }
+  .speed-pill .number.y { color: var(--yellow); }
+  .speed-pill .label { font-size: 12px; color: var(--dim); }
+  .side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 26px 0 30px; }
+  .side-by-side .terminal { margin: 0; }
+  .side-label { font-size: 12px; font-weight: 600; margin-bottom: 8px; letter-spacing: 0.5px; text-transform: uppercase; }
+  .side-label.git-label { color: var(--blue); } .side-label.sem-label { color: var(--green); }
+  .add { color: var(--green); } .del { color: var(--red); } .hunk { color: #22d3ee; } .path { color: var(--accent); font-weight: 600; }
+  .cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 26px 0 30px; }
+  .cmd-card { padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; transition: border-color 0.2s, transform 0.2s; }
+  .cmd-card:hover { border-color: #444; transform: translateY(-1px); }
+  .cmd-card .cmd-name { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 6px; }
+  .cmd-card .cmd-name code { color: #22d3ee; background: none; border: 0; padding: 0; }
+  .cmd-card .cmd-desc { font-size: 12px; color: var(--dim); line-height: 1.6; }
+  .fade-in { opacity: 0; transform: translateY(16px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+  .fade-in.visible { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) { .fade-in { opacity: 1; transform: none; transition: none; } }
+  @media (max-width: 700px) { .side-by-side, .cmd-grid { grid-template-columns: 1fr; } }
+  .footer { margin-top: 64px; padding-top: 22px; border-top: 1px solid var(--border); color: var(--dim); font-size: 13px; }
+  @media (max-width: 600px) { body { font-size: 14px; } h1 { font-size: 24px; } .terminal-body { font-size: 12px; padding: 14px; } }
+</style>
+</head>
+<body>
+<nav><div class="inner"><a href="/">rohan sharma</a><a href="/blogs">blogs</a></div></nav>
+<main>
+<h1>CI Was Becoming a Mess</h1>
+<div class="date">November 2026</div>
+
+<div class="speed-row">
+  <div class="speed-pill"><span class="number">1m 38s</span><span class="label">8 agents onto main</span></div>
+  <div class="speed-pill"><span class="number y">276s &rarr; 84s</span><span class="label">one change, after one fix</span></div>
+  <div class="speed-pill"><span class="number">97%</span><span class="label">of a check is the tests</span></div>
+</div>
+
+<p>Once coding agents started doing real work, the slow part of shipping stopped being the writing. An agent finishes a change in a few minutes, and then it waits on CI for longer than it took to write the code. Run five or eight agents at once and the waiting turns into a queue, every pull request gets tested on its own, then tested again after it is rebased onto main, and two changes that each passed can still break main together.</p>
+
+<p>I have been building <a href="https://useland.dev">land</a> to fix this, and this post is about the technical decisions behind it and what the measurements taught me along the way, including the ones that did not flatter us.</p>
+
+<h2>Merge by function, not by line</h2>
+
+<p>Git merges text line by line, so two agents editing different functions in the same file still collide. land merges with weave, which parses each file into functions, classes and methods and merges them one by one. Two edits to different functions combine cleanly, and two edits to the same function come back as a conflict that names that function, so nothing is ever guessed.</p>
+
+<div class="side-by-side fade-in">
+  <div><div class="side-label git-label">git merge</div>
+  <div class="terminal"><div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="terminal-title">billing.py</span></div>
+<div class="terminal-body"><span class="path">billing.py</span>
+<span class="hunk">@@ -12,6 +12,9 @@</span>
+<span class="r">&lt;&lt;&lt;&lt;&lt;&lt;&lt; agent-a</span>
+<span class="add">+def refund(order): ...</span>
+<span class="r">=======</span>
+<span class="add">+def discount(order): ...</span>
+<span class="r">&gt;&gt;&gt;&gt;&gt;&gt;&gt; agent-b</span>
+<span class="r">CONFLICT</span> <span class="d">both added at the same line</span></div></div></div>
+  <div><div class="side-label sem-label">weave</div>
+  <div class="terminal"><div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="terminal-title">billing.py</span></div>
+<div class="terminal-body"><span class="path">billing.py</span>
+  <span class="g">+</span> <span class="w">refund</span>      <span class="d">function</span>  <span class="m">agent-a</span>
+  <span class="g">+</span> <span class="w">discount</span>    <span class="d">function</span>  <span class="m">agent-b</span>
+
+<span class="g">&#10003; merged</span> <span class="d">2 entities, no overlap</span>
+<span class="d">tests run once on the result</span></div></div></div>
+</div>
+
+<h2>Test the merged result once</h2>
+
+<p>The biggest waste in a normal setup is testing each pull request separately and then again after every rebase. land merges all the finished branches onto the latest main and runs the tests once on the combined result. If something fails, it finds the branch responsible by looking at what the failing test actually read, drops only that branch, and lands the rest.</p>
+
+<div class="terminal">
+  <div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="terminal-title">8 agents finish at once · NetworkX · all tests must pass</span></div>
+<div class="terminal-body"><span class="cmd w">$ land merge agent-1 agent-2 ... agent-8 --onto main</span>
+<span class="g">&#10003; land</span>              one merge, checked together     <span class="g">1m 38s</span>
+<span class="y">&#9679; RWX</span>               merge queue, one at a time      <span class="y">5m 45s</span>
+<span class="y">&#9679; Blacksmith</span>        8 PRs, merge queue              <span class="y">9m 44s</span>
+<span class="r">&#9679; GitHub Actions</span>    8 PRs, merge queue             <span class="r">21m 45s</span></div>
+</div>
+
+<h2>Let your setup script define the environment</h2>
+
+<p>I stopped trying to guess how anyone's project installs. You write a small setup script, land runs it once on a throwaway machine, and whatever it leaves behind is the environment. While it runs, land records every file of your repo the script looked at, and it reuses that environment until one of those files changes.</p>
+
+<p>This is where I learned my first lesson the hard way. On NetworkX a one line change took 276 seconds, because the obvious <code>pip install -e .</code> touches every source file, so every edit looked like a dependency change and the environment was rebuilt each time. Installing only the dependencies brought the same change down to 84 seconds without touching the engine at all.</p>
+
+<div class="terminal fade-in"><div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="terminal-title">.land/setup.sh</span></div>
+<div class="terminal-body"><span class="hunk">@@ install only what the tests need @@</span>
+<span class="del">- pip install -e ".[default,test]"     # reads every source file</span>
+<span class="add">+ pip install numpy scipy pandas pytest pytest-xdist</span>
+<span class="add">+ pip install ./stub                   # metadata and entry points only</span>
+
+<span class="m">one line change to main</span>   <span class="r">276s</span>  <span class="d">&rarr;</span>  <span class="g">84s</span></div></div>
+
+<h2>Only rerun what a change can reach</h2>
+
+<p>While each test command runs, land records every file it reads. On the next merge a command reruns only if one of those files changed, and results are stored against exactly what was read, so the same code coming back after a rebase reuses its earlier result instead of running again. This works per test command today, so a monorepo gets the most out of it with one command per package.</p>
+
+<h2>Isolation that strangers' code can trust</h2>
+
+<p>land runs other people's setup scripts and tests, so every check runs in its own Firecracker microVM, offline and as an unprivileged user, and the machine boots in about half a second. A test that fails and then passes on the same code is refused as flaky instead of being retried until it goes green, a change that deletes or skips a test is refused, and main only moves with a signed statement of exactly what passed.</p>
+
+<div class="cmd-grid fade-in">
+  <div class="cmd-card"><div class="cmd-name"><code>merge</code> by entity</div><div class="cmd-desc">functions, classes and methods merge one by one, conflicts name the function</div></div>
+  <div class="cmd-card"><div class="cmd-name"><code>check</code> once</div><div class="cmd-desc">every finished branch tested together on the latest main</div></div>
+  <div class="cmd-card"><div class="cmd-name"><code>reuse</code> by reads</div><div class="cmd-desc">environment and results kept until a file they read changes</div></div>
+  <div class="cmd-card"><div class="cmd-name"><code>refuse</code> flaky</div><div class="cmd-desc">a test that fails then passes on the same code never lands</div></div>
+</div>
+
+<h2>Then I profiled it</h2>
+
+<p>When I profiled a land check end to end, almost all of the time, about 97 percent, was the test suite itself. Boot took half a second, the environment cost nothing because it was reused, and packing results took a couple of seconds. So I went looking at the hardware, and ran the same suite on bare cloud machines and inside our own runner.</p>
+
+<div class="terminal">
+  <div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="terminal-title">same 9,444 tests · 4 workers · median of 2 runs</span></div>
+<div class="terminal-body"><span class="g">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span>                    <span class="g">27s</span>  <span class="w">AMD EPYC</span> <span class="d">running directly</span>
+<span class="y">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span>               <span class="y">42s</span>  <span class="w">Intel Xeon</span> <span class="d">running directly</span>
+<span class="r">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span>   <span class="r">78s</span>  <span class="w">our runner</span> <span class="d">VM inside a VM, plus tracing</span></div>
+</div>
+
+<p>Faster cores won back about fifteen seconds, but the layers around the tests cost more than twice that. Our microVMs were running inside rented cloud VMs, which means every check paid for virtualization twice. The isolation is not negotiable when you run other people's code, but the nesting is, so the next step is running the microVMs directly on bare metal AMD machines.</p>
+
+<h2>What I am still honest about</h2>
+
+<p>On a single fresh change, land is not the fastest today, because a dedicated fast runner beats our nested setup on raw hardware. Where land wins clearly is the case that is becoming normal, several agents finishing at once, where checking the merged result once used a fraction of the compute of every merge queue I measured. The two things left to make it fast everywhere are better hardware and running only the individual tests a change can reach, and I am working on both.</p>
+
+<p>The whole thing is priced per change that lands on main rather than per CI minute, because I wanted the incentive to be doing less work, not more.</p>
+
+<div class="footer">Built on <a href="https://ataraxy-labs.github.io/sem/">sem</a> and weave. Try it at <a href="https://useland.dev">useland.dev</a>, or find me on <a href="https://x.com/rs545837">X</a>.</div>
+</main>
+<script>
+const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } }), { threshold: 0.15 });
+document.querySelectorAll('.fade-in').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
